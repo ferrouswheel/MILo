@@ -1,0 +1,31 @@
+[project]
+name = "milo"
+version = "1.0.0"
+description = "Mesh-In-the-Loop Gaussian Splatting for Detailed and Efficient Surface Reconstruction"
+readme = "README.md"
+requires-python = ">=3.9,<3.13"
+dependencies = [
+    # PyTorch with CUDA 12.8
+    "torch==2.3.1",
+    "torchvision==0.18.1",
+    "torchaudio==2.3.1",
+
+    # Core dependencies
+    "open3d==0.19.0",
+    "trimesh==4.6.8",
+    "scikit-image==0.24.0",
+    "opencv-python==4.11.0.86",
+    "plyfile==1.1",
+    "tqdm==4.67.1",
+]
+
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["milo"]
+
+[tool.uv]
+find-links = ["https://download.pytorch.org/whl/cu128"]
