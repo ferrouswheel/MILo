@@ -68,10 +68,10 @@ def getNerfppNorm(cam_info):
 def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
     cam_infos = []
     for idx, key in enumerate(cam_extrinsics):
-        sys.stdout.write('\r')
-        # the exact output you're looking for:
-        sys.stdout.write("Reading camera {}/{}".format(idx+1, len(cam_extrinsics)))
-        sys.stdout.flush()
+        # Removed verbose camera loading progress
+        # sys.stdout.write('\r')
+        # sys.stdout.write("Reading camera {}/{}".format(idx+1, len(cam_extrinsics)))
+        # sys.stdout.flush()
 
         extr = cam_extrinsics[key]
         intr = cam_intrinsics[extr.camera_id]
@@ -84,19 +84,35 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
 
         if intr.model=="SIMPLE_PINHOLE":
             focal_length_x = intr.params[0]
+            cx, cy = intr.params[1], intr.params[2]
             FovY = focal2fov(focal_length_x, height)
             FovX = focal2fov(focal_length_x, width)
         elif intr.model=="PINHOLE":
             focal_length_x = intr.params[0]
             focal_length_y = intr.params[1]
+            cx, cy = intr.params[2], intr.params[3]
             FovY = focal2fov(focal_length_y, height)
             FovX = focal2fov(focal_length_x, width)
         else:
             assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
 
+        # Warn if principal point is not centered (3DGS assumes centered principal point)
+        cx_expected, cy_expected = width / 2.0, height / 2.0
+        cx_offset = abs(cx - cx_expected)
+        cy_offset = abs(cy - cy_expected)
+        # Warn if offset is more than 1% of image dimension
+        if cx_offset > width * 0.01 or cy_offset > height * 0.01:
+            print(f"\n[WARNING] Camera {idx}: Principal point ({cx:.1f}, {cy:.1f}) is not centered ({cx_expected:.1f}, {cy_expected:.1f})")
+            print(f"          Offset: ({cx_offset:.1f}, {cy_offset:.1f}) pixels. 3DGS assumes centered principal point - this may cause misalignment!")
+
         image_path = os.path.join(images_folder, os.path.basename(extr.name))
         image_name = os.path.basename(image_path).split(".")[0]
         image = Image.open(image_path)
+
+        # Removed debug message about image dimension mismatches (expected when using downsampled images)
+        # actual_w, actual_h = image.size
+        # if actual_w != width or actual_h != height:
+        #     print(f"\n[DEBUG] Image {image_name}: intrinsics say {width}x{height}, actual image is {actual_w}x{actual_h}")
 
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
                               image_path=image_path, image_name=image_name, width=width, height=height)
@@ -108,8 +124,67 @@ def fetchPly(path):
     plydata = PlyData.read(path)
     vertices = plydata['vertex']
     positions = np.vstack([vertices['x'], vertices['y'], vertices['z']]).T
-    colors = np.vstack([vertices['red'], vertices['green'], vertices['blue']]).T / 255.0
-    normals = np.vstack([vertices['nx'], vertices['ny'], vertices['nz']]).T
+
+    print(f"[INFO] Loading PLY from: {path}")
+    print(f"[INFO] Point cloud has {len(positions)} points")
+    print(f"[INFO] Available fields: {vertices.data.dtype.names}")
+
+    # Try different color formats
+    if 'red' in vertices:
+        # Standard PLY format with red/green/blue
+        print("[INFO] Using standard RGB color format (red/green/blue)")
+        colors = np.vstack([vertices['red'], vertices['green'], vertices['blue']]).T / 255.0
+    elif 'f_dc_0' in vertices:
+        # Gaussian splatting format with spherical harmonics
+        print("[INFO] Using Gaussian splatting SH color format (f_dc_0/f_dc_1/f_dc_2)")
+        colors = np.vstack([vertices['f_dc_0'], vertices['f_dc_1'], vertices['f_dc_2']]).T
+        # SH coefficients need to be converted (already in 0-1 range typically)
+        colors = np.clip(colors, 0, 1)
+    else:
+        # No color information, use white
+        print("[WARNING] No color fields found, using white for all points")
+        colors = np.ones_like(positions)
+
+    # Handle normals
+    if 'nx' in vertices:
+        normals = np.vstack([vertices['nx'], vertices['ny'], vertices['nz']]).T
+        print("[INFO] Normals found in PLY file")
+    elif 'rot_0' in vertices or 'rotation_0' in vertices:
+        # Compute normals from Gaussian quaternion rotations
+        # The Z-axis of the rotation matrix is the surface normal
+        print("[INFO] Computing normals from Gaussian quaternion rotations (Z-axis of rotation matrix)")
+
+        # Detect quaternion field names (could be rot_X or rotation_X)
+        if 'rot_0' in vertices:
+            quat_fields = ['rot_0', 'rot_1', 'rot_2', 'rot_3']
+        else:
+            quat_fields = ['rotation_0', 'rotation_1', 'rotation_2', 'rotation_3']
+
+        # Load quaternions (stored as w,x,y,z in 3DGS/gsplat PLY files)
+        quats = np.vstack([vertices[field] for field in quat_fields]).T  # (N, 4)
+
+        # Convert quaternions to rotation matrices and extract Z-axis
+        normals = np.zeros_like(positions)
+        for i, q in enumerate(quats):
+            # Quaternion to rotation matrix (WXYZ format, same as COLMAP)
+            w, x, y, z = q
+
+            # Rotation matrix from quaternion
+            R = np.array([
+                [1 - 2*(y*y + z*z),     2*(x*y - w*z),     2*(x*z + w*y)],
+                [    2*(x*y + w*z), 1 - 2*(x*x + z*z),     2*(y*z - w*x)],
+                [    2*(x*z - w*y),     2*(y*z + w*x), 1 - 2*(x*x + y*y)]
+            ])
+
+            # Z-axis (third column) is the normal, normalize for safety
+            normal = R[:, 2]
+            normals[i] = normal / np.linalg.norm(normal)
+
+        print(f"[INFO] Computed {len(normals)} normals from quaternions")
+    else:
+        normals = np.zeros_like(positions)
+        print("[WARNING] No normals or quaternions found in PLY file, using zeros")
+
     return BasicPointCloud(points=positions, colors=colors, normals=normals)
 
 def storePly(path, xyz, rgb):
@@ -129,7 +204,7 @@ def storePly(path, xyz, rgb):
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
 
-def readColmapSceneInfo(path, images, eval, llffhold=8):
+def readColmapSceneInfo(path, images, eval, init_ply_path=None, llffhold=8):
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
         cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
@@ -154,13 +229,48 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
 
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
-    ply_path = os.path.join(path, "sparse/0/points3D.ply")
-    bin_path = os.path.join(path, "sparse/0/points3D.bin")
-    txt_path = os.path.join(path, "sparse/0/points3D.txt")
+    # Handle init.ply with optional override
+    if init_ply_path and init_ply_path != "":
+        # User specified override path
+        if not os.path.isabs(init_ply_path):
+            init_ply_path = os.path.join(path, init_ply_path)
+        print(f"[INFO] Using user-specified init.ply: {init_ply_path}")
+        ply_path = init_ply_path
+        pcd = fetchPly(ply_path)
+    elif os.path.exists(os.path.join(path, "sparse/0/init.ply")):
+        # Check for init.ply in default location (gsplat format)
+        ply_path = os.path.join(path, "sparse/0/init.ply")
+        print(f"[INFO] Using init.ply from default location: {ply_path}")
+        pcd = fetchPly(ply_path)
+    else:
+        # Fallback to standard COLMAP points3D files
+        print("[INFO] No init.ply found, using COLMAP points3D files")
+        ply_path = os.path.join(path, "sparse/0/points3D.ply")
+        bin_path = os.path.join(path, "sparse/0/points3D.bin")
+        txt_path = os.path.join(path, "sparse/0/points3D.txt")
 
-    xyz, rgb, _ = read_points3D_binary(bin_path)
-    storePly(ply_path, xyz, rgb)
-    pcd = fetchPly(ply_path)
+        xyz, rgb, _ = read_points3D_binary(bin_path)
+        storePly(ply_path, xyz, rgb)
+        pcd = fetchPly(ply_path)
+
+    # Debug: Compare spatial extent of point cloud vs camera positions
+    from utils.graphics_utils import getWorld2View2
+    pcd_center = pcd.points.mean(axis=0)
+    pcd_extent = pcd.points.max(axis=0) - pcd.points.min(axis=0)
+    cam_centers = []
+    for cam in train_cam_infos:
+        W2C = getWorld2View2(cam.R, cam.T)
+        C2W = np.linalg.inv(W2C)
+        cam_centers.append(C2W[:3, 3])
+    cam_centers = np.array(cam_centers)
+    cam_center = cam_centers.mean(axis=0)
+    cam_extent = cam_centers.max(axis=0) - cam_centers.min(axis=0)
+    print(f"\n[DEBUG] Point cloud center: {pcd_center}")
+    print(f"[DEBUG] Point cloud extent: {pcd_extent}")
+    print(f"[DEBUG] Camera center: {cam_center}")
+    print(f"[DEBUG] Camera extent: {cam_extent}")
+    print(f"[DEBUG] Distance between centers: {np.linalg.norm(pcd_center - cam_center):.4f}")
+    print(f"[DEBUG] NeRF++ normalization radius: {nerf_normalization['radius']:.4f}")
 
     scene_info = SceneInfo(point_cloud=pcd,
                            train_cameras=train_cam_infos,

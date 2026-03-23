@@ -19,6 +19,9 @@ snapshot_bw.dump
 train_test_depth.py
 *.out
 
+__pycache__
+.egg-info
+
 log/
 profiler_test.py
 

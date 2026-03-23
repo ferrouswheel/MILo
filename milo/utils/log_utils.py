@@ -244,8 +244,14 @@ def log_training_progress(
             titles_to_log.append(f"Rendered Normals {viewpoint_idx}")
             
         if mesh_kick_on:
-            images_to_log.append(torch.zeros_like(render_pkg["render"]))
-            titles_to_log.append(f"Mesh RGB {viewpoint_idx}")
+            # Mesh has no vertex colors during training (geometry only)
+            # Show RGB if available, otherwise black placeholder
+            if "rgb" in mesh_render_pkg:
+                images_to_log.append(mesh_render_pkg["rgb"].squeeze().permute(2, 0, 1))
+                titles_to_log.append(f"Mesh RGB {viewpoint_idx}")
+            else:
+                images_to_log.append(torch.zeros_like(render_pkg["render"]))
+                titles_to_log.append(f"Mesh RGB {viewpoint_idx} (no colors)")
 
             images_to_log.append(
                 torch.where(

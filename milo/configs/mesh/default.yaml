@@ -21,6 +21,10 @@ delaunay_sampling_method: "surface"  # "random", "surface" or "surface+opacity"
 filter_large_edges: true  # true or false?
 collapse_large_edges: false  # true or false?
 
+# Mesh face culling (useful when cameras point inward at each other)
+near_plane_cull_distance: 0.2  # Cull faces closer than this distance (meters). -1.0 to disable.
+backface_culling: true  # Cull faces pointing away from camera
+
 # Rasterization
 use_scalable_renderer: false
 

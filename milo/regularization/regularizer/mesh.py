@@ -11,7 +11,7 @@ from scene.mesh import Meshes, MeshRasterizer, MeshRenderer, ScalableMeshRendere
 from scene.gaussian_model import GaussianModel
 from utils.tetmesh import marching_tetrahedra
 from utils.camera_utils import get_cameras_spatial_extent
-from utils.geometry_utils import is_in_view_frustum
+from utils.geometry_utils import is_in_view_frustum, compute_face_culling_mask
 from utils.geometry_utils import depth_to_normal as depth_double_to_normal
 from regularization.sdf.integration import (
     evaluate_cull_sdf_values,
@@ -436,7 +436,20 @@ def compute_mesh_regularization(
         # --- Filtering ---
         # Frustum filtering
         faces_mask = is_in_view_frustum(verts, viewpoint_cam)[faces].any(axis=1)
-        
+
+        # Near-plane and back-face culling
+        near_plane_dist = config.get("near_plane_cull_distance", -1.0)
+        backface_cull = config.get("backface_culling", False)
+        if (near_plane_dist is not None and near_plane_dist > 0) or backface_cull:
+            culling_mask = compute_face_culling_mask(
+                verts=verts,
+                faces=faces,
+                camera=viewpoint_cam,
+                near_plane_distance=near_plane_dist if near_plane_dist > 0 else None,
+                backface_culling=backface_cull,
+            )
+            faces_mask = faces_mask & culling_mask
+
         # GOF filtering for large edges
         if config["filter_large_edges"] or config["collapse_large_edges"]:
             dmtet_distance = torch.norm(end_points[:, 0, :] - end_points[:, 1, :], dim=-1)

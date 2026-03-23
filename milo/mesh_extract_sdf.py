@@ -8,6 +8,27 @@ import random
 from tqdm import tqdm
 from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, get_combined_args
+
+
+def ensure_default_params(args):
+    """Ensure all required attributes have defaults when not present."""
+    defaults = {
+        # ModelParams defaults
+        'images': 'images',
+        'resolution': -1,
+        'white_background': False,
+        'data_device': 'cuda',
+        'eval': False,
+        'init_ply_path': '',
+        'llff': 8,
+        'kernel_size': 0.0,
+        # New mesh extraction parameters
+        'ply_path': None,
+    }
+    for key, value in defaults.items():
+        if not hasattr(args, key):
+            setattr(args, key, value)
+    return args
 from gaussian_renderer import GaussianModel, render_simp
 import numpy as np
 import trimesh
@@ -26,10 +47,11 @@ import gc
 from utils.geometry_utils import depth_to_normal as depth_double_to_normal
 from regularization.sdf.learnable import convert_occupancy_to_sdf, convert_sdf_to_occupancy
 from utils.geometry_utils import (
-    flatten_voronoi_features, 
-    unflatten_voronoi_features, 
-    is_in_view_frustum, 
+    flatten_voronoi_features,
+    unflatten_voronoi_features,
+    is_in_view_frustum,
     identify_out_of_field_points,
+    compute_face_culling_mask,
 )
 
 from scene.gaussian_model import SparseGaussianAdam
@@ -62,8 +84,22 @@ def extract_mesh_with_sdf_refinement(
     
     # Load Gaussian model
     gaussians = GaussianModel(dataset.sh_degree)
-    scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
-    gaussians.load_ply(os.path.join(dataset.model_path, "point_cloud", f"iteration_{iteration}", "point_cloud.ply"))
+
+    # Use custom PLY path if provided, otherwise use default structure
+    if args.ply_path is not None:
+        ply_path = args.ply_path
+        print(f"[INFO] Loading Gaussians from custom path: {ply_path}")
+        # When using custom PLY, create minimal directory structure for Scene
+        os.makedirs(os.path.join(dataset.model_path, "point_cloud"), exist_ok=True)
+        # Create a dummy iteration folder so Scene doesn't error
+        os.makedirs(os.path.join(dataset.model_path, "point_cloud", "iteration_0"), exist_ok=True)
+        scene = Scene(dataset, gaussians, load_iteration=-1, shuffle=False)
+    else:
+        ply_path = os.path.join(dataset.model_path, "point_cloud", f"iteration_{iteration}", "point_cloud.ply")
+        print(f"[INFO] Loading Gaussians from default path: {ply_path}")
+        scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
+
+    gaussians.load_ply(ply_path)
     gaussians.set_occupancy_mode(mesh_config["occupancy_mode"])
     
     bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
@@ -265,7 +301,20 @@ def extract_mesh_with_sdf_refinement(
         
         # Frustum filtering
         faces_mask = is_in_view_frustum(verts, viewpoint_cam)[faces].any(axis=1)
-        
+
+        # Near-plane and back-face culling
+        near_plane_dist = mesh_config.get("near_plane_cull_distance", -1.0)
+        backface_cull = mesh_config.get("backface_culling", False)
+        if (near_plane_dist is not None and near_plane_dist > 0) or backface_cull:
+            culling_mask = compute_face_culling_mask(
+                verts=verts,
+                faces=faces,
+                camera=viewpoint_cam,
+                near_plane_distance=near_plane_dist if near_plane_dist > 0 else None,
+                backface_culling=backface_cull,
+            )
+            faces_mask = faces_mask & culling_mask
+
         # Filtering out large edges as in GOF
         if mesh_config["filter_large_edges"] or mesh_config["collapse_large_edges"]:
             dmtet_distance = torch.norm(end_points[:, 0, :] - end_points[:, 1, :], dim=-1)
@@ -550,6 +599,7 @@ if __name__ == "__main__":
     pipeline = PipelineParams(parser)
     parser.add_argument("--iteration", default=18000, type=int)
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--ply_path", default=None, type=str, help="Path to custom PLY file. If not specified, uses <model_path>/point_cloud/iteration_<iteration>/point_cloud.ply")
     parser.add_argument("--n_delaunay_sites", default=-1, type=int)
     parser.add_argument("--mtet_on_cpu", action="store_true")
     # Rasterization
@@ -572,8 +622,9 @@ if __name__ == "__main__":
     parser.add_argument("--n_binary_steps_to_reset_sdf", default=8, type=int)
     parser.add_argument("--sdf_reset_linearization_n_steps", default=20, type=int)
     args = get_combined_args(parser)
+    args = ensure_default_params(args)  # Fill in defaults for missing attributes
     print("Rendering " + args.model_path)
-    
+
     random.seed(0)
     np.random.seed(0)
     torch.manual_seed(0)

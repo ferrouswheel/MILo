@@ -68,6 +68,14 @@ def cameraList_from_camInfos(cam_infos, resolution_scale, args):
     for id, c in enumerate(cam_infos):
         camera_list.append(loadCam(args, id, c, resolution_scale))
 
+    # Log mask loading summary
+    if len(camera_list) > 0:
+        masks_loaded = sum(1 for cam in camera_list if cam.gt_mask is not None)
+        if masks_loaded > 0:
+            print(f"[INFO] Loaded alpha masks for {masks_loaded}/{len(camera_list)} cameras (from RGBA images)")
+        else:
+            print(f"[INFO] No alpha masks found (images are RGB, not RGBA)")
+
     return camera_list
 
 def camera_to_JSON(id, camera : Camera):

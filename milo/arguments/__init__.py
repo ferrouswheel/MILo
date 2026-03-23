@@ -44,7 +44,7 @@ class ParamGroup:
                 setattr(group, arg[0], arg[1])
         return group
 
-class ModelParams(ParamGroup): 
+class ModelParams(ParamGroup):
     def __init__(self, parser, sentinel=False):
         self.sh_degree = 3
         self._source_path = ""
@@ -57,6 +57,7 @@ class ModelParams(ParamGroup):
         # self.use_decoupled_appearance = False
         self.llff = 8
         self.kernel_size = 0.0  # Added
+        self.init_ply_path = ""  # Override path to init.ply (empty = use default)
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -106,8 +107,8 @@ def get_combined_args(parser : ArgumentParser):
         with open(cfgfilepath) as cfg_file:
             print("Config file found: {}".format(cfgfilepath))
             cfgfile_string = cfg_file.read()
-    except TypeError:
-        print("Config file not found at")
+    except (TypeError, FileNotFoundError):
+        print("Config file not found, using command-line arguments only")
         pass
     args_cfgfile = eval(cfgfile_string)
 

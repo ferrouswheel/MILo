@@ -153,6 +153,14 @@ class GaussianExtractor(object):
         print(f'sdf_trunc: {sdf_trunc}')
         print(f'depth_truc: {depth_trunc}')
 
+        # Log mask usage
+        if mask_backgrond:
+            masks_available = sum(1 for v in self.viewpoint_stack if v.gt_mask is not None)
+            if masks_available > 0:
+                print(f'[INFO] TSDF will use gt_masks to exclude background ({masks_available}/{len(self.viewpoint_stack)} views have masks)')
+            else:
+                print(f'[INFO] mask_background=True but no gt_masks found in cameras')
+
         volume = o3d.pipelines.integration.ScalableTSDFVolume(
             voxel_length= voxel_size,
             sdf_trunc=sdf_trunc,

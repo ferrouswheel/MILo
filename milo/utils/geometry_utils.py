@@ -271,5 +271,106 @@ def identify_out_of_field_points(
         )  # (N,)
         
         out_of_field_mask[valid_mask] = False
-        
+
     return out_of_field_mask
+
+
+def compute_face_culling_mask(
+    verts: torch.Tensor,
+    faces: torch.Tensor,
+    camera: Camera,
+    near_plane_distance: float = None,
+    backface_culling: bool = False,
+) -> torch.Tensor:
+    """Compute a mask for faces that should be culled based on near-plane and/or back-face criteria.
+
+    Args:
+        verts (torch.Tensor): Mesh vertices with shape (N, 3) in world space.
+        faces (torch.Tensor): Face indices with shape (F, 3).
+        camera (Camera): The camera to use for culling.
+        near_plane_distance (float, optional): Minimum distance from camera. Faces with any vertex
+            closer than this distance will be culled. If None, no near-plane culling is applied.
+        backface_culling (bool): If True, cull faces that face away from the camera.
+
+    Returns:
+        torch.Tensor: Boolean mask of shape (F,) where True means the face should be KEPT.
+    """
+    device = verts.device
+    n_faces = faces.shape[0]
+
+    # Start with all faces visible
+    keep_mask = torch.ones(n_faces, dtype=torch.bool, device=device)
+
+    if near_plane_distance is not None and near_plane_distance > 0:
+        # Transform vertices to view space
+        view_verts = transform_points_world_to_view(
+            points=verts.unsqueeze(0),
+            cameras=[camera],
+        )[0]  # (N, 3)
+
+        # Get z-depth (positive = in front of camera)
+        vert_depths = view_verts[:, 2]  # (N,)
+
+        # Get depths for each face vertex
+        face_depths = vert_depths[faces]  # (F, 3)
+
+        # Cull faces where ANY vertex is closer than the threshold
+        min_face_depth = face_depths.min(dim=1)[0]  # (F,)
+        near_plane_mask = min_face_depth >= near_plane_distance
+        keep_mask = keep_mask & near_plane_mask
+
+    if backface_culling:
+        # Get face vertices
+        face_verts = verts[faces]  # (F, 3, 3)
+
+        # Compute face normals (cross product of edges)
+        v0, v1, v2 = face_verts[:, 0], face_verts[:, 1], face_verts[:, 2]
+        edge1 = v1 - v0
+        edge2 = v2 - v0
+        face_normals = torch.cross(edge1, edge2, dim=-1)  # (F, 3)
+        face_normals = torch.nn.functional.normalize(face_normals, dim=-1)
+
+        # Compute face centers
+        face_centers = face_verts.mean(dim=1)  # (F, 3)
+
+        # Compute view direction (from face center to camera)
+        camera_pos = camera.camera_center  # (3,)
+        view_dirs = camera_pos.unsqueeze(0) - face_centers  # (F, 3)
+        view_dirs = torch.nn.functional.normalize(view_dirs, dim=-1)
+
+        # Face is front-facing if normal points toward camera (positive dot product)
+        dot_products = (face_normals * view_dirs).sum(dim=-1)  # (F,)
+        frontface_mask = dot_products > 0
+        keep_mask = keep_mask & frontface_mask
+
+    return keep_mask
+
+
+def compute_vertex_culling_mask(
+    verts: torch.Tensor,
+    camera: Camera,
+    near_plane_distance: float = None,
+) -> torch.Tensor:
+    """Compute a mask for vertices that are too close to the camera.
+
+    Args:
+        verts (torch.Tensor): Mesh vertices with shape (N, 3) in world space.
+        camera (Camera): The camera to use for culling.
+        near_plane_distance (float, optional): Minimum distance from camera.
+
+    Returns:
+        torch.Tensor: Boolean mask of shape (N,) where True means the vertex should be KEPT.
+    """
+    if near_plane_distance is None or near_plane_distance <= 0:
+        return torch.ones(verts.shape[0], dtype=torch.bool, device=verts.device)
+
+    # Transform vertices to view space
+    view_verts = transform_points_world_to_view(
+        points=verts.unsqueeze(0),
+        cameras=[camera],
+    )[0]  # (N, 3)
+
+    # Get z-depth (positive = in front of camera)
+    vert_depths = view_verts[:, 2]  # (N,)
+
+    return vert_depths >= near_plane_distance

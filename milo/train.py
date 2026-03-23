@@ -342,6 +342,8 @@ def training(
             # ---Densification---
             gaussians_have_changed = False
             if iteration < opt.densify_until_iter:
+                if iteration == 500:
+                    print(f"[DEBUG] Densification active: densify_from_iter={opt.densify_from_iter}, densify_until_iter={opt.densify_until_iter}, interval={opt.densification_interval}")
                 # Keep track of max radii in image-space for pruning
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
 
@@ -356,9 +358,13 @@ def training(
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0 and iteration != args.depth_reinit_iter:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-                    gaussians.densify_and_prune_mask(opt.densify_grad_threshold, 
-                                                    0.005, scene.cameras_extent, 
+                    n_gaussians_before = gaussians._xyz.shape[0]
+                    print(f"[DEBUG] Iteration {iteration}: Densifying/pruning (current count: {n_gaussians_before})")
+                    gaussians.densify_and_prune_mask(opt.densify_grad_threshold,
+                                                    0.005, scene.cameras_extent,
                                                     size_threshold, mask_blur)
+                    n_gaussians_after = gaussians._xyz.shape[0]
+                    print(f"[DEBUG] Iteration {iteration}: After densify/prune: {n_gaussians_after} (change: {n_gaussians_after - n_gaussians_before:+d})")
                     mask_blur = torch.zeros(gaussians._xyz.shape[0], device='cuda')
                     gaussians_have_changed = True
                     if use_mip_filter:
@@ -369,6 +375,8 @@ def training(
                         )
                     
                 if iteration == args.depth_reinit_iter:
+                    n_gaussians_before = gaussians._xyz.shape[0]
+                    print(f"[DEBUG] Iteration {iteration}: Depth reinitialization (current count: {n_gaussians_before})")
 
                     num_depth = gaussians._xyz.shape[0]*args.num_depth_factor
 
@@ -387,6 +395,8 @@ def training(
 
                     gaussians.training_setup(opt)
                     gaussians.init_culling(len(scene.getTrainCameras()))
+                    n_gaussians_after = gaussians._xyz.shape[0]
+                    print(f"[DEBUG] Iteration {iteration}: After depth reinit: {n_gaussians_after} (change: {n_gaussians_after - n_gaussians_before:+d})")
                     mask_blur = torch.zeros(gaussians._xyz.shape[0], device='cuda')
                     torch.cuda.empty_cache()
                     gaussians_have_changed = True
@@ -398,7 +408,11 @@ def training(
                         )
 
                 if iteration >= args.aggressive_clone_from_iter and iteration % args.aggressive_clone_interval == 0 and iteration!=args.depth_reinit_iter:
+                    n_gaussians_before = gaussians._xyz.shape[0]
+                    print(f"[DEBUG] Iteration {iteration}: Aggressive culling/cloning (current count: {n_gaussians_before})")
                     gaussians.culling_with_clone(scene, render_simp, iteration, args, pipe, background)
+                    n_gaussians_after = gaussians._xyz.shape[0]
+                    print(f"[DEBUG] Iteration {iteration}: After culling/cloning: {n_gaussians_after} (change: {n_gaussians_after - n_gaussians_before:+d})")
                     torch.cuda.empty_cache()
                     mask_blur = torch.zeros(gaussians._xyz.shape[0], device='cuda')
                     gaussians_have_changed = True

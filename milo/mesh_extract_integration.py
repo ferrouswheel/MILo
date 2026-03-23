@@ -9,6 +9,27 @@ import random
 from tqdm import tqdm
 from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, get_combined_args
+
+
+def ensure_default_params(args):
+    """Ensure all required attributes have defaults when not present."""
+    defaults = {
+        # ModelParams defaults
+        'images': 'images',
+        'resolution': -1,
+        'white_background': False,
+        'data_device': 'cuda',
+        'eval': False,
+        'init_ply_path': '',
+        'llff': 8,
+        'kernel_size': 0.0,
+        # New mesh extraction parameters
+        'ply_path': None,
+    }
+    for key, value in defaults.items():
+        if not hasattr(args, key):
+            setattr(args, key, value)
+    return args
 from gaussian_renderer import GaussianModel, render_simp
 import numpy as np
 import trimesh
@@ -154,20 +175,36 @@ def marching_tetrahedra_with_binary_search(
 
     
 def extract_mesh(
-    dataset : ModelParams, iteration : int, pipeline : PipelineParams, 
-    n_delaunay_sites=None, mtet_on_cpu=False, 
-    sdf_mode="integration", n_binary_steps=8, 
+    dataset : ModelParams, iteration : int, pipeline : PipelineParams,
+    n_delaunay_sites=None, mtet_on_cpu=False,
+    sdf_mode="integration", n_binary_steps=8,
     isosurface_value=0.5, trunc_margin=None,
+    args=None,
 ):
     with torch.no_grad():
-        # Load scene and Gaussian model
+        # Load Gaussian model
         gaussians = GaussianModel(dataset.sh_degree)
-        scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
-        gaussians.load_ply(os.path.join(dataset.model_path, "point_cloud", f"iteration_{iteration}", "point_cloud.ply"))
+
+        # Use custom PLY path if provided, otherwise use default structure
+        if args.ply_path is not None:
+            ply_path = args.ply_path
+            print(f"[INFO] Loading Gaussians from custom path: {ply_path}")
+            # When using custom PLY, create minimal directory structure for Scene
+            os.makedirs(os.path.join(dataset.model_path, "point_cloud"), exist_ok=True)
+            # Create a dummy iteration folder so Scene doesn't error
+            os.makedirs(os.path.join(dataset.model_path, "point_cloud", "iteration_0"), exist_ok=True)
+            # When using custom PLY, we need to load the scene separately to get cameras
+            # but we can skip the point cloud loading
+            scene = Scene(dataset, gaussians, load_iteration=-1, shuffle=False)
+        else:
+            ply_path = os.path.join(dataset.model_path, "point_cloud", f"iteration_{iteration}", "point_cloud.ply")
+            print(f"[INFO] Loading Gaussians from default path: {ply_path}")
+            scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
+
+        gaussians.load_ply(ply_path)
         if gaussians.learn_occupancy:
             gaussians.set_occupancy_mode("occupancy_shift")
-        
-        print(f"[INFO] Loaded Gaussian Model from {os.path.join(dataset.model_path, 'point_cloud', f'iteration_{iteration}', 'point_cloud.ply')}")
+
         print(f"[INFO]    > Number of Gaussians: {gaussians._xyz.shape[0]}")
         
         bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
@@ -209,6 +246,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--iteration", default=18000, type=int)
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--ply_path", default=None, type=str, help="Path to custom PLY file. If not specified, uses <model_path>/point_cloud/iteration_<iteration>/point_cloud.ply")
     parser.add_argument("--rasterizer", default="gof", choices=["radegs", "gof"])
     parser.add_argument("--sdf_mode", default="integration", choices=["integration", "depth_fusion"])
     parser.add_argument("--mtet_on_cpu", action="store_true")
@@ -224,6 +262,7 @@ if __name__ == "__main__":
     parser.add_argument("--warn_until_iter", default=3000, type=int)
 
     args = get_combined_args(parser)
+    args = ensure_default_params(args)  # Fill in defaults for missing attributes
     print("Rendering " + args.model_path)
     
     random.seed(0)
@@ -261,14 +300,15 @@ if __name__ == "__main__":
             print(f"[ INFO ] Using default truncation margin for {args.sdf_mode}.")
         
     extract_mesh(
-        model.extract(args), 
-        args.iteration, 
-        pipeline.extract(args), 
-        n_delaunay_sites=args.n_delaunay_sites, 
+        model.extract(args),
+        args.iteration,
+        pipeline.extract(args),
+        n_delaunay_sites=args.n_delaunay_sites,
         mtet_on_cpu=args.mtet_on_cpu,
         sdf_mode=args.sdf_mode,
         n_binary_steps=args.n_binary_steps,
         isosurface_value=args.isosurface_value,
         trunc_margin=args.trunc_margin,
+        args=args,
     )
     

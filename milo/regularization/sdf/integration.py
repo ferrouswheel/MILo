@@ -24,14 +24,20 @@ def evaluate_sdf_values(points, views, gaussians, pipeline, background, kernel_s
 
 @torch.no_grad()
 def evaluate_cull_sdf_values(
-    points, views, masks, gaussians, pipeline, background, kernel_size, return_colors=False, 
-    isosurface_value:Union[float, torch.Tensor]=0.5, 
-    transform_sdf_to_linear_space:bool=False, 
+    points, views, masks, gaussians, pipeline, background, kernel_size, return_colors=False,
+    isosurface_value:Union[float, torch.Tensor]=0.5,
+    transform_sdf_to_linear_space:bool=False,
     min_occupancy_value:float=1e-10,
     integrate_func:Callable=None,
-):    
+):
     if integrate_func is None:
         raise ValueError("integrate_func must be provided.")
+
+    # Log mask usage for SDF integration
+    gt_masks_count = sum(1 for v in views if v.gt_mask is not None)
+    external_masks_count = len(masks) if masks is not None else 0
+    if gt_masks_count > 0 or external_masks_count > 0:
+        print(f"[INFO] SDF integration using masks: {gt_masks_count} gt_masks, {external_masks_count} external masks")
 
     # final_sdf = torch.zeros((points.shape[0]), dtype=torch.float32, device="cuda")
     final_sdf = torch.ones((points.shape[0]), dtype=torch.float32, device="cuda")
